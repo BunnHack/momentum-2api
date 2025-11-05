@@ -6,7 +6,7 @@ import { serve } from "https://deno.land/std@0.203.0/http/server.ts";
 const UPSTREAM_URL = "https://www.movementlabs.ai/api/chat";
 
 // 我们定义的模型 ID
-const MODEL_ID = "momentum";
+const MODEL_ID = "movement";
 
 // --- CORS 头 ---
 
@@ -81,9 +81,15 @@ async function handleChatCompletionsRequest(req: Request): Promise<Response> {
 
     // 构造向上游 API 的请求
     const upstreamPayload = { messages };
+
+    // ** [关键更新] **
+    // 添加伪装头，模拟从其官网前端发出的请求，以绕过 403 Forbidden 保护
     const upstreamHeaders = {
       'Content-Type': 'application/json',
       'x-message-count': '0', // 根据抓包示例设置
+      'Referer': 'https://www.movementlabs.ai/',
+      'Origin': 'https://www.movementlabs.ai',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     };
 
     const upstreamResponse = await fetch(UPSTREAM_URL, {
@@ -95,7 +101,19 @@ async function handleChatCompletionsRequest(req: Request): Promise<Response> {
     if (!upstreamResponse.ok) {
       const errorBody = await upstreamResponse.text();
       console.error(`Upstream API Error: ${upstreamResponse.status} ${errorBody}`);
-      return new Response(errorBody, { status: upstreamResponse.status, headers: corsHeaders });
+      // 将上游的错误信息更友好地返回给客户端
+      const errorJson = {
+        error: {
+            message: `Upstream API error: ${errorBody}`,
+            type: "upstream_error",
+            param: null,
+            code: upstreamResponse.status
+        }
+      };
+      return new Response(JSON.stringify(errorJson), { 
+        status: upstreamResponse.status, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
     }
 
     // 根据 stream 参数决定如何处理响应
@@ -147,7 +165,7 @@ async function handleNonStreamingResponse(upstreamResponse: Response): Promise<R
           fullContent += content;
         }
       } catch (error) {
-        console.error('Error parsing non-stream line:', line, error);
+        console.warn('Ignoring malformed non-stream line:', line);
       }
     }
   }
@@ -219,7 +237,7 @@ function createOpenAIStreamTransformer(): TransformStream<string, Uint8Array> {
           controller.enqueue(encoder.encode(sse));
 
         } catch (error) {
-          console.error('Error parsing or processing stream line:', line, error);
+          console.warn('Ignoring malformed stream line:', line);
         }
       }
     },
